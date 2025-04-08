@@ -1,58 +1,43 @@
 const fetch = require('node-fetch');
-global.fetch = fetch; 
+global.fetch = fetch;
 global.Headers = fetch.Headers;
 
-const amqp = require('amqplib/callback_api');
 const express = require('express');
 const multer = require('multer');
-const path = require('path');
-const { translate } = require('./utils/translate');
-const { ocr } = require('./utils/ocr');
-const { createPdf } = require('./utils/pdf');
+const amqp = require('amqplib/callback_api');
 
 const app = express();
-const upload = multer({ dest: 'data/' });
+
+const fs = require('fs');
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        cb(null, 'data/');
+    },
+    filename: function (req, file, cb) {
+        cb(null, file.originalname); // giữ tên gốc
+    }
+});
+const upload = multer({ storage: storage });
+
+const { startConsumer, DB_FILE_PATH } = require('./rabbit-consumer');
+startConsumer();
 
 app.use(express.static('public'));
 
-// RabbitMQ
-amqp.connect('amqp://localhost', (error0, connection) => {
-    if (error0) {
-        throw error0;
-    }
-    connection.createChannel((error1, channel) => {
-        if (error1) {
-            throw error1;
-        }
+app.post('/upload', upload.single('image'), (req, res) => {
+    const filePath = req.file.path;
+    const message = JSON.stringify({ filePath });
 
-        const queue = 'image-processing';
-
-        channel.assertQueue(queue, {
-            durable: false
-        });
-
-        app.post('/upload', upload.single('image'), (req, res) => {
-            const filePath = req.file.path;
-            const message = JSON.stringify({ filePath });
-
-            channel.sendToQueue(queue, Buffer.from(message));
-            console.log(" [x] Sent %s", message);
-            res.status(202).send('File uploaded and processing started');
-        });
-
-        console.log('SERVER: [%s] Waiting for messages in %s', new Date().toLocaleString(), queue);
-    });
-});
-
-// Consumer run ocr and translate
-function startConsumer() {
+    // Gửi message tới RabbitMQ
     amqp.connect('amqp://localhost', (error0, connection) => {
         if (error0) {
-            throw error0;
+            res.status(500).send('Failed to connect to RabbitMQ');
+            return;
         }
         connection.createChannel((error1, channel) => {
             if (error1) {
-                throw error1;
+                res.status(500).send('Failed to create RabbitMQ channel');
+                return;
             }
 
             const queue = 'image-processing';
@@ -61,26 +46,32 @@ function startConsumer() {
                 durable: false
             });
 
-            console.log(' [*] Waiting for messages in %s. To exit press CTRL+C', queue);
+            channel.sendToQueue(queue, Buffer.from(message));
+            console.log(" [x] Sent %s", message);
 
-            channel.consume(queue, async (msg) => {
-                const { filePath } = JSON.parse(msg.content.toString());
+            // Chờ xử lý và kiểm tra kết quả trong db.json
+            const checkResult = setInterval(() => {
                 try {
-                    const text = await ocr(filePath);
-                    const translatedText = await translate(text);
-                    const pdfPath = path.join(__dirname, 'output', `${Date.now()}.pdf`);
-                    await createPdf(translatedText, pdfPath);
-                    console.log(`PDF created at ${pdfPath}`);
-                } catch (error) {
-                    console.error('Error processing message', error);
+                    const db = fs.existsSync(DB_FILE_PATH)
+                        ? JSON.parse(fs.readFileSync(DB_FILE_PATH, 'utf-8'))
+                        : [];
+
+                    const result = db.find(entry => entry.originalFilePath === filePath);
+
+                    if (result) {
+                        clearInterval(checkResult);
+                        const pdfPath = result.pdfFilePath;
+                        return res.download(pdfPath);
+                    }
+                } catch (err) {
+                    clearInterval(checkResult);
+                    console.error(err);
+                    return res.status(500).send('Error checking db.json');
                 }
-            }, {
-                noAck: true
-            });
+            }, 1000);
         });
     });
-}
-startConsumer();
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

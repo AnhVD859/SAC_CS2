@@ -1,67 +1,125 @@
 const amqp = require('amqplib/callback_api');
 const path = require('path');
+const fs = require('fs');
 const { translate } = require('./utils/translate');
-const { ocr } = require('./utils/ocr');
-const { createPdf } = require('./utils/pdf');
+const { image2text } = require('./utils/ocr');
+const { createPDF } = require('./utils/pdf');
+const OUT_FILE = "./output/output.pdf";
+const { applyGrayscale } = require('./filters');
 
-async function processImage(imagePath) {
-    const imageBuffer = fs.readFileSync(imagePath);
-  
-    // Áp dụng các filter
-    const grayscaleImage = await applyGrayscale(imageBuffer);
-    const blurredImage = await applyBlur(grayscaleImage);
-  
-    // Lưu ảnh đã áp dụng filter tạm thời để OCR
-    const tempImagePath = path.join(__dirname, 'data', 'temp.png');
-    fs.writeFileSync(tempImagePath, blurredImage);
-  
-    // Gọi hàm OCR với ảnh đã áp dụng filter
-    const text = await image2text(tempImagePath);
-  
-    // Xóa ảnh tạm thời
-    fs.unlinkSync(tempImagePath);
-  
-    return text;
-  }
+const DB_FILE_PATH = path.join(__dirname, 'db.json');
 
-amqp.connect('amqp://localhost', (error0, connection) => {
-    if (error0) {
-        throw error0;
+
+function saveToDb(data, dbFilePath) {
+    const db = fs.existsSync(dbFilePath) ? JSON.parse(fs.readFileSync(dbFilePath, 'utf-8')) : [];
+                    
+    const index = db.findIndex(entry => entry.originalFilePath === data.originalFilePath);
+    if (index !== -1) {
+        db[index] = data;
+    } else {
+        db.push(data);
     }
-    connection.createChannel((error1, channel) => {
-        if (error1) {
-            throw error1;
+
+    fs.writeFileSync(dbFilePath, JSON.stringify(db, null, 2));
+}
+
+function normalizeText(text) {
+    // Tách text thành mảng các dòng
+    const lines = text.split('\n');
+    let result = [];
+    let currentParagraph = [];
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim(); // Loại bỏ khoảng trắng thừa ở đầu và cuối
+
+        if (line === '') {
+            // Nếu gặp dòng trống (xuống dòng kép), kết thúc đoạn hiện tại
+            if (currentParagraph.length > 0) {
+                result.push(currentParagraph.join(' '));
+                currentParagraph = [];
+            }
+        } else {
+            // Thêm dòng vào đoạn hiện tại
+            currentParagraph.push(line);
         }
+    }
 
-        const queue = 'image-processing';
+    // Thêm đoạn cuối nếu còn
+    if (currentParagraph.length > 0) {
+        result.push(currentParagraph.join(' '));
+    }
 
-        channel.assertQueue(queue, {
-            durable: false
-        });
+    // Nối các đoạn bằng một xuống dòng
+    return result.join('\n');
+}
 
-        channel.consume(queue, async (msg) => {
-            try {
-                const text = await ocr.image2text("./data/sample.png");
-                console.log(text);
-                const viText = await translate(text);
-                console.log(viText);
-                const pdfFile = createPDF(viText);
-                console.log("This is PDF file: " + pdfFile)
-            } catch (e) {
-                console.log(e);
+
+function startConsumer() {
+    amqp.connect('amqp://localhost', (error0, connection) => {
+        if (error0) {
+            throw error0;
+        }
+        connection.createChannel((error1, channel) => {
+            if (error1) {
+                throw error1;
             }
-            const { filePath } = JSON.parse(msg.content.toString());
-            try {
-                const text = await ocr.image2text(filePath);
-                const translatedText = await translate(text);
-                const pdfPath = path.join(__dirname, 'output', `${Date.now()}.pdf`);
-                await createPdf(translatedText, pdfPath);
-                console.log(`PDF created at ${pdfPath}`);
-            } catch (error) {
-                console.error('Error processing message', error);
-            }
-        }, {
-            noAck: true
+
+            const queue = 'image-processing';
+
+            channel.assertQueue(queue, {
+                durable: false
+            });
+
+            console.log(' [*] Waiting for messages in %s', queue);
+
+            channel.consume(queue, async (msg) => {
+                const { filePath } = JSON.parse(msg.content.toString());
+                try {
+                    const imageBuffer = fs.readFileSync(filePath);
+                    const processedImage = await applyGrayscale(imageBuffer);
+
+                    const outputDir = path.join(__dirname, 'pre-processing');
+                    if (!fs.existsSync(outputDir)) {
+                        fs.mkdirSync(outputDir);
+                    }
+                    const outputFilePath = path.join(outputDir, path.basename(filePath));
+                    fs.writeFileSync(outputFilePath, processedImage);
+
+                    const text = normalizeText(await image2text(processedImage));
+                    console.log('Extracted text:', text);
+                    const viText = await translate(text);
+                    console.log('VI text:', viText);
+                    
+                    const randomId = Math.random().toString(36).substring(2, 18);
+                    const pdfFileName = `${randomId}.pdf`;
+                    const pdfFilePath = path.join(__dirname, 'output', pdfFileName);
+
+                    const pdfFile = createPDF(viText);
+                    const docStream = fs.createWriteStream(pdfFile);
+                    docStream.on('finish', () => {
+                        try {
+                            fs.renameSync(pdfFile, pdfFilePath);
+                            console.log("This is PDF file: " + pdfFilePath);
+                        } catch (err) {
+                            console.error("Error renaming file:", err);
+                        }
+                    });
+                    docStream.end();
+
+                    const dbEntry = {
+                        originalFilePath: filePath,
+                        pdfFilePath: pdfFilePath
+                    };
+                    saveToDb(dbEntry, DB_FILE_PATH);
+                } catch (error) {
+                    console.error('Error processing message', error);
+                }
+            }, {
+                noAck: true
+            });
         });
     });
-});
+}
+
+exports.startConsumer = startConsumer;
+exports.DB_FILE_PATH = DB_FILE_PATH;
