@@ -1,3 +1,7 @@
+const fetch = require('node-fetch');
+global.fetch = fetch; 
+global.Headers = fetch.Headers;
+
 const ocr = require("./utils/ocr");
 const { createPDF } = require("./utils/pdf");
 const { translate } = require("./utils/translate");
