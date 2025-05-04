@@ -5,10 +5,8 @@ const { translate } = require('./utils/translate');
 const { image2text } = require('./utils/ocr');
 const { createPDF } = require('./utils/pdf');
 const OUT_FILE = "./output/output.pdf";
-const { applyGrayscale } = require('./filters');
 
 const DB_FILE_PATH = path.join(__dirname, 'db.json');
-
 
 function saveToDb(data, dbFilePath) {
     const db = fs.existsSync(dbFilePath) ? JSON.parse(fs.readFileSync(dbFilePath, 'utf-8')) : [];
@@ -53,8 +51,7 @@ function normalizeText(text) {
     return result.join('\n');
 }
 
-
-function startConsumer() {
+function imageConsumer() {
     amqp.connect('amqp://localhost', (error0, connection) => {
         if (error0) {
             throw error0;
@@ -75,17 +72,9 @@ function startConsumer() {
             channel.consume(queue, async (msg) => {
                 const { filePath } = JSON.parse(msg.content.toString());
                 try {
+                    // Đọc ảnh gốc
                     const imageBuffer = fs.readFileSync(filePath);
-                    const processedImage = await applyGrayscale(imageBuffer);
-
-                    const outputDir = path.join(__dirname, 'pre-processing');
-                    if (!fs.existsSync(outputDir)) {
-                        fs.mkdirSync(outputDir);
-                    }
-                    const outputFilePath = path.join(outputDir, path.basename(filePath));
-                    fs.writeFileSync(outputFilePath, processedImage);
-
-                    const text = normalizeText(await image2text(processedImage));
+                    const text = normalizeText(await image2text(imageBuffer));
                     console.log('Extracted text:', text);
                     const viText = await translate(text);
                     console.log('VI text:', viText);
@@ -121,5 +110,5 @@ function startConsumer() {
     });
 }
 
-exports.startConsumer = startConsumer;
+exports.imageConsumer = imageConsumer;
 exports.DB_FILE_PATH = DB_FILE_PATH;
