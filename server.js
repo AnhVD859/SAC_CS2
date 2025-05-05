@@ -99,8 +99,18 @@ const sendToQueue = (message, res) => {
 };
 
 app.post('/upload', upload.single('image'), (req, res) => {
+    if (!req.file) {
+        console.error("❌ Không nhận được file upload từ client");
+        return res.status(400).json({ error: "No file uploaded" });
+    }
     const filePath = req.file.path;
     const message = JSON.stringify({ filePath });
+
+    const result = db.find(entry => entry.originalFilePath === filePath);
+    if (result) {
+        const pdfPath = result.pdfFilePath;
+        return res.download(pdfPath);
+    }
 
     // Gửi message tới RabbitMQ
     sendToQueue(message, res);

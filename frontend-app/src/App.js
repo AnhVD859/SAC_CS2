@@ -253,7 +253,6 @@ function App() {
             <li>Tải lên ảnh để tự động xử lý và nhận PDF</li>
             <li>Quá trình xử lý có thể mất vài giây tùy vào kích thước ảnh</li>
             <li>File PDF sẽ tự động tải về sau khi xử lý hoàn tất</li>
-            <li>Hỗ trợ các định dạng ảnh thông dụng: JPG, PNG, GIF, BMP</li>
           </ul>
         </div>
       </div>
