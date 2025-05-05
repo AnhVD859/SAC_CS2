@@ -106,6 +106,9 @@ app.post('/upload', upload.single('image'), (req, res) => {
     const filePath = req.file.path;
     const message = JSON.stringify({ filePath });
 
+    const db = fs.existsSync(DB_FILE_PATH)
+    ? JSON.parse(fs.readFileSync(DB_FILE_PATH, 'utf-8'))
+    : [];
     const result = db.find(entry => entry.originalFilePath === filePath);
     if (result) {
         const pdfPath = result.pdfFilePath;
@@ -118,11 +121,10 @@ app.post('/upload', upload.single('image'), (req, res) => {
     // Chờ xử lý và kiểm tra kết quả trong db.json
     const checkResult = setInterval(() => {
         try {
-            const db = fs.existsSync(DB_FILE_PATH)
+            const db2 = fs.existsSync(DB_FILE_PATH)
                 ? JSON.parse(fs.readFileSync(DB_FILE_PATH, 'utf-8'))
                 : [];
-
-            const result = db.find(entry => entry.originalFilePath === filePath);
+            const result = db2.find(entry => entry.originalFilePath === filePath);
 
             if (result) {
                 clearInterval(checkResult);
